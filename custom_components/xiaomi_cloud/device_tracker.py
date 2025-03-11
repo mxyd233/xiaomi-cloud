@@ -1,4 +1,3 @@
-
 """Support for the Xiaomi device tracking."""
 import logging
 
@@ -65,11 +64,11 @@ class XiaomiDeviceEntity(TrackerEntity, RestoreEntity, Entity):
 
     @property
     def imei(self):
-        """Return battery value of the device."""
-        return self.coordinator.data[vin]["imei"]   
+        """Return the IMEI of the device."""
+        return self.coordinator.data[self._vin]["imei"]   
 
     @property
-    def device_state_attributes(self):
+    def extra_state_attributes(self):
         """Return device specific attributes."""
         attrs = {
             "last_update": self.coordinator.data[self._vin]["device_location_update_time"],
