@@ -64,6 +64,11 @@ class XiaomiDeviceEntity(TrackerEntity, RestoreEntity, Entity):
         return self.coordinator.data[self._vin]["device_power"]
 
     @property
+    def imei(self):
+        """Return battery value of the device."""
+        return self.coordinator.data[vin]["imei"]   
+
+    @property
     def device_state_attributes(self):
         """Return device specific attributes."""
         attrs = {
