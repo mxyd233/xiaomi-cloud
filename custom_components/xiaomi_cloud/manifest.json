@@ -1,11 +1,11 @@
 {
   "domain": "xiaomi_cloud",
   "name": "Xiaomi Cloud",
-  "documentation": "https://github.com/lyj0309/xiaomi-cloud",
-  "issue_tracker": "https://github.com/lyj0309/xiaomi-cloud/issues",
+  "documentation": "https://github.com/mxyd233/xiaomi-cloud",
+  "issue_tracker": "https://github.com/mxyd233/xiaomi-cloud/issues",
   "dependencies": [],
   "iot_class": "cloud_polling",
-  "version": "1.2.5",
+  "version": "1.2.8",
   "config_flow": true,
   "codeowners": ["@fineemb"],
   "requirements": []
