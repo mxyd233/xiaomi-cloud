@@ -63,30 +63,46 @@ async def async_setup_entry(hass, config_entry) -> bool:
         hass.config_entries.async_forward_entry_setups(config_entry, [DEVICE_TRACKER])
     )
 
-    async def services(call):
-        """Handle the service call."""
-        imei = call.data.get("imei")
-        service = call.service
-        if service == "noise":
-            await coordinator._send_command({'service':'noise','data':{'imei':imei}})
-        elif service == "find":
-            await coordinator._send_command({'service':'find','data':{'imei':imei}})
-        elif service == "lost":
-            await coordinator._send_command({
-                'service':'lost',
-                'data':{
-                    'imei':imei,
-                    'content':call.data.get("content"),
-                    'phone':call.data.get("phone"),
-                    'onlinenotify':call.data.get("onlinenotify")
-                    }})
-        elif service == "clipboard":
-            await coordinator._send_command({'service':'clipboard','data':{'text':call.data.get("text")}})
+    # 只在第一次设置时注册服务，避免重复注册
+    if not hass.services.has_service(DOMAIN, "noise"):
+        async def services(call):
+            """Handle the service call."""
+            imei = call.data.get("imei")
+            service = call.service
+            
+            # 查找包含该IMEI设备的coordinator
+            target_coordinator = None
+            for entry_id, entry_data in hass.data[DOMAIN].items():
+                if entry_id != "devices" and entry_id != "unsub_device_tracker":
+                    coord = entry_data[COORDINATOR]
+                    if coord.data and any(device.get('imei') == imei for device in coord.data):
+                        target_coordinator = coord
+                        break
+            
+            if target_coordinator is None:
+                _LOGGER.error("No coordinator found for device with IMEI: %s", imei)
+                return
+                
+            if service == "noise":
+                await target_coordinator._send_command({'service':'noise','data':{'imei':imei}})
+            elif service == "find":
+                await target_coordinator._send_command({'service':'find','data':{'imei':imei}})
+            elif service == "lost":
+                await target_coordinator._send_command({
+                    'service':'lost',
+                    'data':{
+                        'imei':imei,
+                        'content':call.data.get("content"),
+                        'phone':call.data.get("phone"),
+                        'onlinenotify':call.data.get("onlinenotify")
+                        }})
+            elif service == "clipboard":
+                await target_coordinator._send_command({'service':'clipboard','data':{'text':call.data.get("text")}})
 
-    hass.services.async_register(DOMAIN, "noise", services)
-    hass.services.async_register(DOMAIN, "find", services)
-    hass.services.async_register(DOMAIN, "lost", services)
-    hass.services.async_register(DOMAIN, "clipboard", services)
+        hass.services.async_register(DOMAIN, "noise", services)
+        hass.services.async_register(DOMAIN, "find", services)
+        hass.services.async_register(DOMAIN, "lost", services)
+        hass.services.async_register(DOMAIN, "clipboard", services)
 
     return True
 
@@ -98,6 +114,15 @@ async def async_unload_entry(hass, config_entry):
 
     if unload_ok:
         hass.data[DOMAIN].pop(config_entry.entry_id)
+        
+        # 检查是否还有其他配置条目，如果没有则删除服务
+        remaining_entries = [entry_id for entry_id in hass.data[DOMAIN] 
+                           if entry_id not in ["devices", "unsub_device_tracker"]]
+        if not remaining_entries:
+            hass.services.async_remove(DOMAIN, "noise")
+            hass.services.async_remove(DOMAIN, "find") 
+            hass.services.async_remove(DOMAIN, "lost")
+            hass.services.async_remove(DOMAIN, "clipboard")
 
     return unload_ok
 
