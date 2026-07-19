@@ -1,33 +1,46 @@
 import asyncio
-import json
-import datetime
-import time
-import logging
-import re
 import base64
+import datetime
 import hashlib
-import math
+import json
+import logging
+import time
 from urllib import parse
-import aiohttp
-import async_timeout
-from aiohttp.client_exceptions import ClientConnectorError
-from homeassistant.core import Config, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.components.device_tracker import (
-    ATTR_BATTERY,
-    DOMAIN as DEVICE_TRACKER,
-)
 
-from .const import (
-    DOMAIN,
+import aiohttp
+from aiohttp.client_exceptions import ClientConnectorError
+import async_timeout
+
+from homeassistant.helpers.aiohttp_client import (
+    async_create_clientsession,
+    async_get_clientsession,
 )
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
+from .api import (
+    browser_find_device_credentials,
+    device_status_params,
+    entity_data,
+    lost_command_params,
+    noise_command_params,
+)
+from .const import DOMAIN
+
 _LOGGER = logging.getLogger(__name__)
 
 class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching XiaomiCloud data API."""
-    def __init__(self, hass, user, password, scan_interval, coordinate_type):
+    def __init__(
+        self,
+        hass,
+        user,
+        password,
+        scan_interval,
+        coordinate_type,
+        service_token=None,
+        user_id=None,
+        credential_update_callback=None,
+    ):
         """Initialize."""
         self._username = user
         self._password = password
@@ -39,7 +52,10 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
         self._scan_interval = scan_interval
         self._coordinate_type = coordinate_type
         self.service_data = None
-        self.userId = None
+        self.userId = user_id
+        self._Service_Token = service_token
+        self._manual_mode = bool(service_token and user_id)
+        self._credential_update_callback = credential_update_callback
         self.login_result = False
         self.service = None
 
@@ -50,19 +66,63 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=update_interval)
 
+    def _set_credentials(self, service_token, user_id):
+        """Store refreshed Find Device credentials."""
+        self._Service_Token = service_token
+        self.userId = user_id
+        self._manual_mode = True
+        if self._credential_update_callback is not None:
+            self._credential_update_callback(service_token, user_id)
+
+    async def _async_refresh_credentials(self):
+        """Refresh Find Device credentials with the stored account password."""
+        if not self._username or not self._password:
+            return False
+        session = async_create_clientsession(
+            self.hass,
+            auto_cleanup=False,
+            cookie_jar=aiohttp.CookieJar(unsafe=True),
+        )
+        try:
+            credentials = await browser_find_device_credentials(
+                session, self._username, self._password
+            )
+        finally:
+            session.detach()
+        if credentials is None:
+            return False
+        self._set_credentials(*credentials)
+        return True
+
+    async def _async_ensure_device_info(self, session):
+        """Load devices, refreshing rejected stored credentials once."""
+        if await self._get_device_info(session):
+            return True
+        if not await self._async_refresh_credentials():
+            return False
+        return await self._get_device_info(session)
+
     async def _get_sign(self, session):
-        url = 'https://account.xiaomi.com/pass/serviceLogin?sid%3Di.mi.com&sid=i.mi.com&_locale=zh_CN&_snsNone=true'
-        pattern = re.compile(r'_sign=(.*?)&')
-        _LOGGER.debug("_get_sign",self._headers)
+        url = 'https://account.xiaomi.com/pass/serviceLogin?sid=i.mi.com&_json=true'
+        _device_id = hashlib.md5(b'xiaomi_cloud_ha').hexdigest().upper()[:16]
+        self._headers['User-Agent'] = 'Android-7.1.1-1.0.0-ONEPLUS A3010-136-{} APP/xiaomi.smarthome APPV/620301'.format(_device_id)
+        _LOGGER.debug("_get_sign headers: %s", self._headers)
         try:
             with async_timeout.timeout(15):
                 r = await session.get(url, headers=self._headers)
-            self._cookies['pass_trace'] = r.history[0].headers.getall('Set-Cookie')[2].split(";")[0].split("=")[1]
-            _LOGGER.debug("--2---%s",parse.unquote(pattern.findall(r.history[0].headers.getall('Location')[0])[0]))
-            self._sign = parse.unquote(pattern.findall(r.history[0].headers.getall('Location')[0])[0])
-            return True
+            text = await r.text()
+            if text.startswith('&&&START&&&'):
+                text = text[len('&&&START&&&'):]
+            resp = json.loads(text)
+            self._sign = resp.get('_sign')
+            if self._sign:
+                _LOGGER.debug("_sign obtained: %s", self._sign[:20])
+                return True
+            else:
+                _LOGGER.warning("No _sign in response: %s", resp)
+                return False
         except BaseException as e:
-            _LOGGER.warning(e.args[0])
+            _LOGGER.warning("get_sign error: %s", e)
             return False
 
     async def _serviceLoginAuth2(self, session, captCode=None):
@@ -71,13 +131,15 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
         self._headers['Accept'] = '*/*'
         self._headers['Origin'] = 'https://account.xiaomi.com'
         self._headers['Referer'] = 'https://account.xiaomi.com/pass/serviceLogin?sid%3Di.mi.com&sid=i.mi.com&_locale=zh_CN&_snsNone=true'
-        self._headers['Cookie'] = 'pass_trace={};'.format(self._cookies['pass_trace'])
+        _device_id = hashlib.md5(b'xiaomi_cloud_ha').hexdigest().upper()[:16]
 
         auth_post_data = {'_json': 'true',
                           '_sign': self._sign,
                           'callback': 'https://i.mi.com/sts',
+                          'deviceId': _device_id,
                           'hash': hashlib.md5(self._password.encode('utf-8')).hexdigest().upper(),
-                          'qs': '%3Fsid%253Di.mi.com%26sid%3Di.mi.com%26_locale%3Dzh_CN%26_snsNone%3Dtrue',
+                          'qs': '?sid=i.mi.com&_json=true',
+                          'sdkVersion': '3.8.6',
                           'serviceParam': '{"checkSafePhone":false}',
                           'sid': 'i.mi.com',
                           'user': self._username}
@@ -90,8 +152,11 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
                                           '; ick={}'.format(self._cookies['ick'])
             with async_timeout.timeout(15):
                 r = await session.post(url, headers=self._headers, data=auth_post_data, cookies=self._cookies)
-            self._cookies['pwdToken'] = r.cookies.get('passToken').value
-            self._serviceLoginAuth2_json = json.loads((await r.text())[11:])
+            text = await r.text()
+            if text.startswith('&&&START&&&'):
+                text = text[len('&&&START&&&'):]
+            self._serviceLoginAuth2_json = json.loads(text)
+            _LOGGER.debug('_serviceLoginAuth2 result: code=%s, desc=%s', self._serviceLoginAuth2_json.get('code'), self._serviceLoginAuth2_json.get('description'))
             return True
         except BaseException as e:
             _LOGGER.warning(e.args[0])
@@ -122,105 +187,185 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
             return False
 
     async def _get_device_info(self, session):
-        url = 'https://i.mi.com/find/device/full/status?ts={}'.format(
-            int(round(time.time() * 1000)))
-        get_device_list_header = {'Cookie': 'userId={};serviceToken={}'.format(
-            self.userId, self._Service_Token)}
+        url = "https://i.mi.com/find/v3/device/status/list"
         try:
-            with async_timeout.timeout(15):
-                r = await session.get(url, headers=get_device_list_header)
-            if r.status == 200:
-                _LOGGER.debug('get_device info',json.loads(await r.text())['data']['devices'])
-                data = json.loads(await r.text())['data']['devices']
-
-                self._device_info = data
-                return True
-            else:
-                return False
-        except BaseException as e:
-            _LOGGER.warning(e.args[0])
-            return False  
-    
-    async def _send_find_device_command(self, session:aiohttp.ClientSession):
-        flag = True
-        for vin in self._device_info:
-            imei = vin["imei"]  
-            url = 'https://i.mi.com/find/device/{}/location'.format(
-                imei)
-            _send_find_device_command_header = {
-                'Cookie': 'userId={};serviceToken={}'.format(self.userId, self._Service_Token)}
-            data = {'userId': self.userId, 'imei': imei,
-                    'auto': 'false', 'channel': 'web', 'serviceToken': self._Service_Token}
-            try:
-                with async_timeout.timeout(15):
-                    r = await session.post(url, headers=_send_find_device_command_header, data=data)
-                _LOGGER.info("find_device res: %s", await r.json())
-                if r.status == 200:
-                    flag = True
-                else:
-                    flag = False
-                    self.login_result = False
-            except BaseException as e:
-                _LOGGER.warning(e.args[0])
+            async with async_timeout.timeout(15):
+                r = await session.get(
+                    url,
+                    headers=self._find_headers(),
+                    params={"ts": self._timestamp()},
+                )
+            if r.status != 200:
                 self.login_result = False
-                flag = False
-        return flag
+                return False
+
+            response = await r.json(content_type=None)
+            if response.get("result") != "ok":
+                self.login_result = False
+                return False
+
+            self._device_info = response["data"]["deviceList"]
+            return True
+        except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
+            _LOGGER.warning("Failed to get Xiaomi device list: %s", err)
+            return False
+
+    def _find_headers(self):
+        return {
+            "Cookie": f"userId={self.userId};serviceToken={self._Service_Token}",
+            "Accept-Language": "zh-CN",
+            "Referer": "https://i.mi.com/find",
+        }
+
+    @staticmethod
+    def _timestamp():
+        return int(time.time() * 1000)
+
+    async def _request_device_status(self, session, device, sync_mode):
+        url = "https://i.mi.com/find/v3/device/status"
+        params = device_status_params(device, sync_mode, self._timestamp())
+        async with async_timeout.timeout(15):
+            response = await session.get(
+                url,
+                headers=self._find_headers(),
+                params=params,
+            )
+        if response.status != 200:
+            self.login_result = False
+            return None
+
+        result = await response.json(content_type=None)
+        if result.get("result") != "ok":
+            return None
+        return result["data"]
+
+    def _find_targets(self):
+        locatable = [
+            device
+            for device in self._device_info
+            if any(
+                component.get("online") and 32 in component.get("supportCmds", [])
+                for component in device.get("componentList", [])
+            )
+        ]
+        if not self.service_data or not self.service_data.get("imei"):
+            return locatable
+
+        identifier = self.service_data["imei"]
+        return [
+            device
+            for device in locatable
+            if device.get("fid") == identifier
+            or any(
+                component.get("did") == identifier
+                for component in device.get("componentList", [])
+            )
+        ]
+
+    async def _send_find_device_command(self, session:aiohttp.ClientSession):
+        targets = self._find_targets()
+        if not targets:
+            return False
+
+        success = True
+        for device in targets:
+            try:
+                result = await self._request_device_status(session, device, 2)
+            except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
+                _LOGGER.warning("Failed to locate Xiaomi device: %s", err)
+                result = None
+            success = result is not None and success
+        return success
     
     async def _send_noise_command(self, session:aiohttp.ClientSession):
-        flag = True
-        imei = self.service_data['imei']  
-        url = 'https://i.mi.com/find/device/{}/noise'.format(
-            imei)
-        _send_noise_command_header = {
-            'Cookie': 'userId={};serviceToken={}'.format(self.userId, self._Service_Token)}
-        data = {'userId': self.userId, 'imei': imei,
-                'auto': 'false', 'channel': 'web', 'serviceToken': self._Service_Token}
+        if self.service_data is None:
+            return False
+        identifier = self.service_data["imei"]
+        device = next(
+            (
+                item
+                for item in self._device_info
+                if item.get("fid") == identifier
+                or any(
+                    component.get("did") == identifier
+                    for component in item.get("componentList", [])
+                )
+            ),
+            None,
+        )
+        if device is None or not (
+            data := noise_command_params(device, identifier)
+        ):
+            _LOGGER.warning("Device does not support play sound: %s", identifier)
+            return False
+        data["serviceToken"] = self._Service_Token
+
+        url = "https://i.mi.com/find/v2/device/command/send"
         try:
-            with async_timeout.timeout(15):
-                r = await session.post(url, headers=_send_noise_command_header, data=data)
-            _LOGGER.debug("noise res: %s", await r.json())
-            if r.status == 200:
-                flag = True
+            async with async_timeout.timeout(15):
+                response = await session.post(
+                    url,
+                    headers=self._find_headers(),
+                    data=data,
+                )
+            result = await response.json(content_type=None)
+            _LOGGER.debug("noise result: %s", result)
+            if response.status == 200 and result.get("result") == "ok":
                 self.service = None
                 self.service_data = None
-            else:
-                flag = False
-                self.login_result = False
-        except BaseException as e:
-            _LOGGER.warning(e.args[0])
-            self.login_result = False
-            flag = False
-        return flag
+                return True
+            _LOGGER.warning("Failed to play Xiaomi sound: %s", result)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            _LOGGER.warning("Failed to play Xiaomi sound: %s", err)
+        return False
 
     async def _send_lost_command(self, session:aiohttp.ClientSession):
-        flag = True
-        imei = self.service_data['imei']  
-        content = self.service_data['content']  
-        phone = self.service_data['phone']  
-        message = {"content":content, "phone": phone}
-        onlinenotify = self.service_data['onlinenotify']
-        url = 'https://i.mi.com/find/device/{}/lost'.format(
-            imei)
-        _send_lost_command_header = {
-            'Cookie': 'userId={};serviceToken={}'.format(self.userId, self._Service_Token)}
-        data = {'userId': self.userId, 'imei': imei,
-                'deleteCard': 'false', 'channel': 'web', 'serviceToken': self._Service_Token, 'onlineNotify': onlinenotify, 'message':json.dumps(message)}
+        if self.service_data is None:
+            return False
+        identifier = self.service_data["imei"]
+        device = next(
+            (
+                item
+                for item in self._device_info
+                if item.get("fid") == identifier
+                or any(
+                    component.get("did") == identifier
+                    for component in item.get("componentList", [])
+                )
+            ),
+            None,
+        )
+        if device is None or not (
+            data := lost_command_params(
+                device,
+                identifier,
+                phone=self.service_data["phone"],
+                content=self.service_data["content"],
+                notify=self.service_data["onlinenotify"],
+            )
+        ):
+            _LOGGER.warning("Device does not support lost mode: %s", identifier)
+            return False
+        data["serviceToken"] = self._Service_Token
+
+        url = "https://i.mi.com/find/v2/device/command/send"
         try:
-            with async_timeout.timeout(15):
-                r = await session.post(url, headers=_send_lost_command_header, data=data)
-            _LOGGER.debug("lost res: %s", await r.json())    
-            if r.status == 200:
-                flag = True
+            async with async_timeout.timeout(15):
+                response = await session.post(
+                    url,
+                    headers=self._find_headers(),
+                    data=data,
+                )
+            result = await response.json(content_type=None)
+            _LOGGER.debug("lost result: %s", result)
+            if response.status == 200 and result.get("result") == "ok":
                 self.service = None
                 self.service_data = None
-            else:
-                flag = False
-                self.login_result = False
-        except BaseException as e:
-            _LOGGER.warning(e.args[0])
-            self.login_result = False
-            flag = False
-        return flag
+                return True
+            _LOGGER.warning("Failed to enable Xiaomi lost mode: %s", result)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            _LOGGER.warning("Failed to enable Xiaomi lost mode: %s", err)
+        return False
 
     async def _send_clipboard_command(self, session:aiohttp.ClientSession):
         flag = True
@@ -253,92 +398,33 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _get_device_location(self, session:aiohttp.ClientSession):
         devices_info = []
-        for vin in self._device_info:
-            imei = vin["imei"] 
-            model = vin["model"] 
-            version = vin["version"]
-            url = 'https://i.mi.com/find/device/status?ts={}&fid={}'.format(
-                int(round(time.time() * 1000)), imei)
-            _send_find_device_command_header = {
-                'Cookie': 'userId={};serviceToken={}'.format(self.userId, self._Service_Token)}
+        for device in self._device_info:
+            result = None
             try:
-                with async_timeout.timeout(15):
-                    r = await session.get(url, headers=_send_find_device_command_header)
-                if r.status == 200:
-                    _LOGGER.info(f"get_device_location_data,user:{self.userId},imei:{imei},model:{model} ,res: {json.loads(await r.text())}")
+                for attempt in range(3):
+                    result = await self._request_device_status(session, device, 0)
+                    if result is None or not result.get("isLocating"):
+                        break
+                    if attempt < 2:
+                        await asyncio.sleep(3)
+            except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
+                _LOGGER.warning("Failed to update Xiaomi device status: %s", err)
+                continue
+            if result is None:
+                continue
 
-                    if "receipt" in json.loads(await r.text())['data']['location']:
-                        gpsInfoTransformed = json.loads(await r.text())['data']['location']['receipt']['gpsInfoTransformed']
-
-                        device_info = {}
-                        location_info_json = {}
-                        if self._coordinate_type == "original":
-                            location_info_json = json.loads(await r.text())['data']['location']['receipt']['gpsInfo']
-                            # wgs84 = self.GCJ2WGS(gpsInfoExtra[0]['longitude'],gpsInfoExtra[0]['latitude'])
-                            # _LOGGER.debug("get_device_location_data_wgs84: %s", wgs84)
-                            # location_info_json = {
-                            #     "accuracy":int(gpsInfoExtra[0]['accuracy']),
-                            #     "coordinateType":'wgs84',
-                            #     "latitude":wgs84[1],
-                            #     "longitude":wgs84[0],
-                            # }                            
-                        else:
-                            location_info_json = next((item for item in gpsInfoTransformed if item.get('coordinateType') == self._coordinate_type), None)
-
-                        device_info["device_lat"] = location_info_json['latitude']
-                        device_info["device_accuracy"] = int(location_info_json['accuracy'])
-                        device_info["device_lon"] = location_info_json['longitude']
-                        device_info["coordinate_type"] = location_info_json['coordinateType']
-
-                        device_info["device_power"] = json.loads(
-                            await r.text())['data']['location']['receipt'].get('powerLevel',0)
-                        device_info["device_phone"] = json.loads(
-                            await r.text())['data']['location']['receipt'].get('phone',0)
-                        timeArray = time.localtime(int(json.loads(
-                            await r.text())['data']['location']['receipt']['infoTime']) / 1000)
-                        device_info["device_location_update_time"] = time.strftime("%Y-%m-%d %H:%M:%S", timeArray)
-                        device_info["imei"] = imei
-                        device_info["model"] = model
-                        device_info["version"] = version
-                        devices_info.append(device_info)
-                    else:
-                        self.login_result = False
-                else:
-                    self.login_result = False
-            except BaseException as e:
-                self.login_result = False
-                _LOGGER.error(e)
+            info = entity_data(result, self._coordinate_type)
+            if info is not None:
+                devices_info.append(info)
+        if self.service == "find":
+            self.service = None
+            self.service_data = None
         return devices_info
-    def GCJ2WGS(self,lon,lat):
-        a = 6378245.0 # 克拉索夫斯基椭球参数长半轴a
-        ee = 0.00669342162296594323 #克拉索夫斯基椭球参数第一偏心率平方
-        PI = 3.14159265358979324 # 圆周率
-
-        x = lon - 105.0
-        y = lat - 35.0
-
-        dLon = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * math.sqrt(abs(x));
-        dLon += (20.0 * math.sin(6.0 * x * PI) + 20.0 * math.sin(2.0 * x * PI)) * 2.0 / 3.0;
-        dLon += (20.0 * math.sin(x * PI) + 40.0 * math.sin(x / 3.0 * PI)) * 2.0 / 3.0;
-        dLon += (150.0 * math.sin(x / 12.0 * PI) + 300.0 * math.sin(x / 30.0 * PI)) * 2.0 / 3.0;
-
-        dLat = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * math.sqrt(abs(x));
-        dLat += (20.0 * math.sin(6.0 * x * PI) + 20.0 * math.sin(2.0 * x * PI)) * 2.0 / 3.0;
-        dLat += (20.0 * math.sin(y * PI) + 40.0 * math.sin(y / 3.0 * PI)) * 2.0 / 3.0;
-        dLat += (160.0 * math.sin(y / 12.0 * PI) + 320 * math.sin(y * PI / 30.0)) * 2.0 / 3.0;
-        radLat = lat / 180.0 * PI
-        magic = math.sin(radLat)
-        magic = 1 - ee * magic * magic
-        sqrtMagic = math.sqrt(magic)
-        dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * PI);
-        dLon = (dLon * 180.0) / (a / sqrtMagic * math.cos(radLat) * PI);
-        wgsLon = lon - dLon
-        wgsLat = lat - dLat
-        return [wgsLon,wgsLat]
 
     async def _async_update_data(self):
         """Update data via library."""
         _LOGGER.debug("service: %s", self.service)
+        tmp = None
         try:
             session = async_get_clientsession(self.hass)
             if self.login_result is True:
@@ -361,47 +447,34 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.info("send_command Failed")
             else:
                 if self._scan_interval>0:
-                    session.cookie_jar.clear()
-                    tmp = await self._get_sign(session)
+                    tmp = await self._async_ensure_device_info(session)
                     if not tmp:
-                        _LOGGER.warning("get_sign Failed")
+                        _LOGGER.warning('Stored credentials and password refresh failed')
                     else:
-                        tmp = await self._serviceLoginAuth2(session)
-                        if not tmp:
-                            _LOGGER.warning('Request Login_url Failed')
+                        _LOGGER.info("get_device info succeed")
+                        self.login_result = True
+                        if self.service == "noise":
+                            tmp = await self._send_noise_command(session)
+                        elif self.service == 'lost':
+                            tmp = await self._send_lost_command(session)
+                        elif self.service == 'clipboard':
+                            tmp = await self._send_clipboard_command(session)
                         else:
-                            if self._serviceLoginAuth2_json['code'] == 0:
-                                # logon success,run self._login_miai()
-                                tmp = await self._login_miai(session)
-                                if not tmp:
-                                    _LOGGER.warning('login Mi Cloud Failed')
-                                else:
-                                    tmp = await self._get_device_info(session)
-                                    if not tmp:
-                                        _LOGGER.warning('get_device info Failed')
-                                    else:
-                                        _LOGGER.info("get_device info succeed")
-                                        self.login_result = True
-                                        if self.service == "noise":
-                                            tmp = await self._send_noise_command(session)
-                                        elif self.service == 'lost':
-                                            tmp = await self._send_lost_command(session)
-                                        elif self.service == 'clipboard':
-                                            tmp = await self._send_clipboard_command(session)
-                                        else:
-                                            tmp = await self._send_find_device_command(session)
-                                        if tmp is True:
-                                            await asyncio.sleep(5)
-                                            tmp = await self._get_device_location(session)
-                                            if not tmp:
-                                                _LOGGER.info("_get_device_location1 Failed")
-                                            else:
-                                                _LOGGER.info("_get_device_location1 succeed")
-                                        else:
-                                            _LOGGER.info("send_command Failed")
+                            tmp = await self._send_find_device_command(session)
+                        if tmp is True:
+                            await asyncio.sleep(5)
+                            tmp = await self._get_device_location(session)
+                            if not tmp:
+                                _LOGGER.info("_get_device_location1 Failed")
+                            else:
+                                _LOGGER.info("_get_device_location1 succeed")
+                        else:
+                            _LOGGER.info("send_command Failed")
 
         except (
             ClientConnectorError
         ) as error:
             raise UpdateFailed(error)
+        if not tmp:
+            raise UpdateFailed("Failed to update Xiaomi Cloud location")
         return tmp

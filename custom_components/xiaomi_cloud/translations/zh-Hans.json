@@ -7,7 +7,16 @@
                 "description": "如果您需要配置方面的帮助，请查看此处: https://github.com/fineemb/xiaomi-cloud",
                 "data": {
                     "password": "密码",
-                    "username": "账号"
+                    "username": "账号",
+                    "manual_input": "手动输入 cookies（如果自动登录失败）"
+                }
+            },
+            "manual": {
+                "title": "手动输入 Cookie",
+                "description": "如果自动登录因安全验证失败，请先在浏览器中登录 i.mi.com，然后从浏览器 cookies 中提取 serviceToken 和 userId 并在下方输入。",
+                "data": {
+                    "serviceToken": "serviceToken",
+                    "userId": "userId"
                 }
             }
         },
@@ -15,7 +24,9 @@
             "get_sign_failed": "获得Sign失败",
             "login_url_failed": "登录失败",
             "login_mi_cloud_failed": "登录小米云失败",
-            "get_device_failed": "没有找到设备"
+            "get_device_failed": "没有找到设备",
+            "login_verification_required": "账号需要安全验证。请先在浏览器中登录 i.mi.com 完成验证，然后再重试。",
+            "manual_cookie_invalid": "提供的 serviceToken 或 userId 无效，请检查后重试。"
         },
         "abort": {
             "single_instance_allowed": "仅允许单个配置.",

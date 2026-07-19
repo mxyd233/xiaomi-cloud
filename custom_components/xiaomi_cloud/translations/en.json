@@ -7,7 +7,16 @@
                 "description": "If you need help with the configuration have a look here: https://github.com/fineemb/xiaomi-cloud",
                 "data": {
                     "password": "Password",
-                    "username": "Username"
+                    "username": "Username",
+                    "manual_input": "Enter cookies manually (if automatic login fails)"
+                }
+            },
+            "manual": {
+                "title": "Manual Cookie Input",
+                "description": "If automatic login fails due to security verification, please log in to i.mi.com in your browser, then extract serviceToken and userId from the browser cookies and enter them below.",
+                "data": {
+                    "serviceToken": "serviceToken",
+                    "userId": "userId"
                 }
             }
         },
@@ -15,7 +24,9 @@
             "get_sign_failed": "Get sign failed",
             "login_url_failed": "Login failed",
             "login_mi_cloud_failed": "Login xiaomi cloud failed",
-            "get_device_failed": "Get device failed"
+            "get_device_failed": "Get device failed",
+            "login_verification_required": "Account requires security verification. Please log in at i.mi.com in your browser first, then try again.",
+            "manual_cookie_invalid": "The provided serviceToken or userId is invalid. Please check and try again."
         },
         "abort": {
             "single_instance_allowed": "Only a single configuration of Colorfulclouds Weather is allowed.",

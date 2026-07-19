@@ -25,7 +25,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     for i in range(len(coordinator.data)):
         devices.append(XiaomiDeviceEntity(hass, coordinator, i))
         _LOGGER.debug("device is : %s", i)
-    async_add_entities(devices, True)
+    async_add_entities(devices)
 
 class XiaomiDeviceEntity(TrackerEntity, RestoreEntity, Entity):
     """Represent a tracked device."""

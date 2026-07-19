@@ -5,32 +5,24 @@ For more details about this component, please refer to
 https://github.com/fineemb/xiaomi-cloud
 """
 import logging
-from homeassistant.core import Config, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.components.device_tracker import (
-    ATTR_BATTERY,
-    DOMAIN as DEVICE_TRACKER,
-)
-from homeassistant.const import (
-    CONF_PASSWORD,
-    CONF_USERNAME,
-    CONF_SCAN_INTERVAL
-)
 
-from .DataUpdateCoordinator import XiaomiCloudDataUpdateCoordinator
+from homeassistant.components.device_tracker import DOMAIN as DEVICE_TRACKER
+from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
+    CONF_COORDINATE_TYPE,
+    CONF_COORDINATE_TYPE_ORIGINAL,
+    COORDINATOR,
     DOMAIN,
     UNDO_UPDATE_LISTENER,
-    COORDINATOR,
-    CONF_COORDINATE_TYPE,
-    CONF_COORDINATE_TYPE_BAIDU,
-    CONF_COORDINATE_TYPE_ORIGINAL,
 )
+from .DataUpdateCoordinator import XiaomiCloudDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-async def async_setup(hass: HomeAssistant, config: Config) -> bool:
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up configured xiaomi cloud."""
     hass.data[DOMAIN] = {"devices": set(), "unsub_device_tracker": {}}
     return True
@@ -44,9 +36,22 @@ async def async_setup_entry(hass, config_entry) -> bool:
 
     _LOGGER.debug("Username: %s", username)
 
+    def update_credentials(service_token, user_id):
+        """Persist refreshed Xiaomi Find Device credentials."""
+        hass.config_entries.async_update_entry(
+            config_entry,
+            data={
+                **config_entry.data,
+                "serviceToken": service_token,
+                "userId": user_id,
+            },
+        )
 
     coordinator = XiaomiCloudDataUpdateCoordinator(
-        hass, username, password, scan_interval, coordinate_type
+        hass, username, password, scan_interval, coordinate_type,
+        service_token=config_entry.data.get("serviceToken"),
+        user_id=config_entry.data.get("userId"),
+        credential_update_callback=update_credentials,
     )
     await coordinator.async_refresh()
 
