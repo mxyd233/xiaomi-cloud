@@ -11,15 +11,19 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/custom-components/hacs)
 
-小米云服务, 支持一个账号下的多设备
-提供`device_tracker`用来定位设备
-可以提供锁机, 响铃, 云剪贴板这些服务
+小米云服务，支持多账号及账号下的多台设备，并为设备提供 `device_tracker` 实体。
+
+当前版本使用小米云“查找设备”接口，支持：
+
+- 获取设备位置、电量及更新时间
+- 查找设备、设备响铃、丢失模式和云剪贴板服务
+- 自有设备及家庭共享设备
+- 保存 `serviceToken` / `userId`，Token 失效后使用账号密码自动刷新
 
 ## 快速上手
-使用HACS安装，添加自定义储存库
+使用 HACS 安装，并添加自定义存储库：`https://github.com/mxyd233/xiaomi-cloud`。
 ![image](https://github.com/lyj0309/xiaomi-cloud/assets/50474995/e7c7fe13-db12-4167-9902-4864ce971261)
-重启ha
-在配置-集成里面添加账号
+重启 Home Assistant，在“设置 → 设备与服务 → 添加集成”中搜索 `Xiaomi Cloud`，然后输入小米账号和密码。
 ![image](https://github.com/lyj0309/xiaomi-cloud/assets/50474995/2707f594-9af0-4b83-a4b5-111d7d9ab1c4)
 
 稍等片刻，即可获取手机信息
@@ -64,6 +68,15 @@
   + 不知道更新了啥
 + ### v1.2.7
   + 修复配置页面无法登录的问题
+
++ ### v1.2.8
+  + 修复 Home Assistant 兼容性及设备追踪相关问题
+
++ ### v1.2.9
+  + 迁移到当前小米云“查找设备”登录及设备接口
+  + 支持 Token 持久化、失效后自动刷新
+  + 修复自有设备和家庭共享设备的响铃、丢失模式命令
+  + 修复失败的响铃、丢失模式命令被周期性重复执行的问题
     
 
 
@@ -103,3 +116,4 @@
 ## 感谢
 https://github.com/rslywhj/xiaomi-cloud
 https://github.com/fineemb/xiaomi-cloud
+https://github.com/lyj0309/xiaomi-cloud
