@@ -276,9 +276,15 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
                 result = None
             success = result is not None and success
         return success
+
+    def _clear_pending_command(self):
+        """Discard a command after one execution attempt."""
+        self.service = None
+        self.service_data = None
     
     async def _send_noise_command(self, session:aiohttp.ClientSession):
         if self.service_data is None:
+            self._clear_pending_command()
             return False
         identifier = self.service_data["imei"]
         device = next(
@@ -297,6 +303,7 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
             data := noise_command_params(device, identifier)
         ):
             _LOGGER.warning("Device does not support play sound: %s", identifier)
+            self._clear_pending_command()
             return False
         data["serviceToken"] = self._Service_Token
 
@@ -311,16 +318,18 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
             result = await response.json(content_type=None)
             _LOGGER.debug("noise result: %s", result)
             if response.status == 200 and result.get("result") == "ok":
-                self.service = None
-                self.service_data = None
+                self._clear_pending_command()
                 return True
             _LOGGER.warning("Failed to play Xiaomi sound: %s", result)
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             _LOGGER.warning("Failed to play Xiaomi sound: %s", err)
+        self._clear_pending_command()
+        self.login_result = False
         return False
 
     async def _send_lost_command(self, session:aiohttp.ClientSession):
         if self.service_data is None:
+            self._clear_pending_command()
             return False
         identifier = self.service_data["imei"]
         device = next(
@@ -345,6 +354,7 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
             )
         ):
             _LOGGER.warning("Device does not support lost mode: %s", identifier)
+            self._clear_pending_command()
             return False
         data["serviceToken"] = self._Service_Token
 
@@ -359,12 +369,13 @@ class XiaomiCloudDataUpdateCoordinator(DataUpdateCoordinator):
             result = await response.json(content_type=None)
             _LOGGER.debug("lost result: %s", result)
             if response.status == 200 and result.get("result") == "ok":
-                self.service = None
-                self.service_data = None
+                self._clear_pending_command()
                 return True
             _LOGGER.warning("Failed to enable Xiaomi lost mode: %s", result)
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             _LOGGER.warning("Failed to enable Xiaomi lost mode: %s", err)
+        self._clear_pending_command()
+        self.login_result = False
         return False
 
     async def _send_clipboard_command(self, session:aiohttp.ClientSession):
